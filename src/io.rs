@@ -163,7 +163,7 @@ where
         self: Pin<&mut Self>,
         act: &mut A,
         ctx: &mut A::Context,
-        task: &mut task::Context<'_>,
+        task: &mut Context<'_>,
     ) -> Poll<Self::Output> {
         let this = self.get_mut();
         let mut inner = this.inner.0.borrow_mut();
@@ -265,7 +265,7 @@ where
         self: Pin<&mut Self>,
         _: &mut A,
         _: &mut A::Context,
-        task: &mut Context,
+        task: &mut Context<'_>,
     ) -> Poll<Self::Output> {
         let this = self.get_mut();
         let mut inner = this.inner.0.borrow_mut();
@@ -452,9 +452,8 @@ impl<I: 'static, S: Sink<I> + Unpin + 'static> SinkWrite<I, S> {
     /// Sends an item to the sink.
     pub fn write(&mut self, item: I) -> Result<(), S::Error> {
         let res = Pin::new(&mut self.inner.borrow_mut().sink).start_send(item);
-        match res {
-            Ok(()) => self.notify_task(),
-            Err(_) => {}
+        if let Ok(()) = res {
+            self.notify_task()
         }
         res
     }
@@ -497,7 +496,7 @@ struct SinkWriteFuture<I: 'static, S: Sink<I>, A> {
     _actor: PhantomData<A>,
 }
 
-impl<I: 'static, S: futures::sink::Sink<I>, A> ActorFuture for SinkWriteFuture<I, S, A>
+impl<I: 'static, S: Sink<I>, A> ActorFuture for SinkWriteFuture<I, S, A>
 where
     S: Sink<I> + Unpin,
     A: Actor + WriteHandler<S::Error>,
@@ -509,7 +508,7 @@ where
         self: Pin<&mut Self>,
         act: &mut A,
         ctxt: &mut A::Context,
-        cx: &mut task::Context<'_>,
+        cx: &mut Context<'_>,
     ) -> Poll<Self::Output> {
         let this = self.get_mut();
         let inner = &mut this.inner.borrow_mut();

@@ -40,6 +40,11 @@
 //! in `current_thread`
 //! - `Stdin`, `Stderr` and `Stdout` from `tokio::io` are the same as file I/O in that regard and
 //! cannot be used in asynchronous manner in actix.
+// It's pain for this crate and has false positives.
+#![allow(clippy::needless_doctest_main)]
+#![deny(bare_trait_objects, nonstandard_style, rust_2018_idioms, unused)]
+#![warn(deprecated_in_future, trivial_casts, trivial_numeric_casts)]
+
 #[doc(hidden)]
 pub use actix_derive::*;
 
@@ -180,6 +185,7 @@ pub mod dev {
 /// # Panics
 ///
 /// This function panics if the actix system is already running.
+#[allow(clippy::unit_arg)]
 pub fn run<R>(f: R) -> std::io::Result<()>
 where
     R: futures::Future<Output = ()> + 'static,

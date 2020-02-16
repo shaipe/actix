@@ -51,7 +51,7 @@ where
     A: Actor,
     A::Context: AsyncContext<A>,
 {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("ContextParts")
             .field("flags", &self.flags)
             .finish()
@@ -210,7 +210,7 @@ where
     C: AsyncContextParts<A> + Unpin,
     A: Actor<Context = C>,
 {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(fmt, "ContextFut {{ /* omitted */ }}")
     }
 }
@@ -340,7 +340,6 @@ where
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // let this = unsafe { self.get_unchecked_mut() };
         let this = self.get_mut();
 
         if !this.ctx.parts().flags.contains(ContextFlags::STARTED) {
