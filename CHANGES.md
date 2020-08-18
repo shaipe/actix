@@ -1,10 +1,90 @@
 # CHANGES
 
-## [0.9.1] 2020-??-??
+## [unreleased]
+
+### Changed
+
+* BREAKING: `SinkWrite::write` calls now send all items correctly using an internal buffer. [#384]
+
+* Add `Sync` bound for `Box<dyn Sender>` trait object that making `Recipient` a `Send` + `Sync` type. [#403]
+
+* Update `parking_lot` to 0.11 [#404]
+
+* Remove unnecessary `PhantomData` field from `Request` making it `Send + Sync`
+  regardless if `Request`'s type-argument is `Send` or `Sync` [#407]
+
+[#384]: https://github.com/actix/actix/pull/384
+[#403]: https://github.com/actix/actix/pull/403
+[#404]: https://github.com/actix/actix/pull/404
+[#407]: https://github.com/actix/actix/pull/407
+
+## [0.10.0-alpha.3] - 2020-05-13
+
+### Changed
+
+* Update `tokio-util` dependency to 0.3, `FramedWrite` trait bound is changed. [#365]
+
+* Only poll dropped ContextFut if event loop is running. [#374]
+
+* Minimum Rust version is now 1.40 (to be able to use `#[cfg(doctest)]`)
+
+[#365]: https://github.com/actix/actix/pull/365
+[#374]: https://github.com/actix/actix/pull/374
 
 ### Fixed
 
-* Fix `MessageResponse` implementation  for `ResponseFuture` to always poll the spawned `Future`. (#317)
+* Fix `ActorFuture::poll_next` impl for `StreamThen` to not lose inner future when it's pending. [#376]
+
+[#376]: https://github.com/actix/actix/pull/376
+
+## [0.10.0-alpha.2] 2020-03-05
+
+### Added
+
+* New `AtomicResponse`, a `MessageResponse` with exclusive poll over actor's reference. [#357]
+
+### Changed
+
+* Require `Pin` for `ResponseActFuture`. [#355]
+
+[#355]: https://github.com/actix/actix/pull/355
+[#357]: https://github.com/actix/actix/pull/357
+
+## [0.10.0-alpha.1] 2020-02-25
+
+### Fixed
+
+* Fix `MessageResponse` implementation  for `ResponseFuture` to always poll the spawned `Future`. [#317]
+
+### Added
+
+* New method address on SyncContext [#341]
+
+* Allow return of any `T: 'static` on `ResponseActFuture`. [#310]
+
+* Allow return of any `T: 'static` on `ResponseFuture`. [#343]
+
+### Changed
+
+* Feature `http` was removed. Actix support for http was moved solely to actix-http and actix-web crates. [#324]
+
+* Make `Pin`s safe [#335] [#346] [#347]
+
+* Only implement `ActorFuture` for `Box` where `ActorFuture` is `Unpin` [#348]
+
+* Upgrade `trust-dns-proto` to 0.19 [#349]
+
+* Upgrade `trust-dns-resolver` to 0.19 [#349]
+
+[#310]: https://github.com/actix/actix/pull/310
+[#317]: https://github.com/actix/actix/pull/317
+[#324]: https://github.com/actix/actix/pull/324
+[#335]: https://github.com/actix/actix/pull/335
+[#343]: https://github.com/actix/actix/pull/343
+[#346]: https://github.com/actix/actix/pull/346
+[#347]: https://github.com/actix/actix/pull/347
+[#348]: https://github.com/actix/actix/pull/348
+[#349]: https://github.com/actix/actix/pull/349
 
 ## [0.9.0] 2019-12-20
 

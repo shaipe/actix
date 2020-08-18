@@ -14,7 +14,7 @@
 //! * [Chat on gitter](https://gitter.im/actix/actix)
 //! * [GitHub repository](https://github.com/actix/actix)
 //! * [Cargo package](https://crates.io/crates/actix)
-//! * Minimum supported Rust version: 1.39 or later
+//! * Minimum supported Rust version: 1.40 or later
 //!
 //! ## Features
 //!
@@ -48,7 +48,7 @@
 #[doc(hidden)]
 pub use actix_derive::*;
 
-#[cfg(test)]
+#[cfg(doctest)]
 doc_comment::doctest!("../README.md");
 
 mod actor;
@@ -80,8 +80,8 @@ pub use crate::address::{Addr, MailboxError, Recipient, WeakAddr};
 pub use crate::context::Context;
 pub use crate::fut::{ActorFuture, ActorStream, FinishStream, WrapFuture, WrapStream};
 pub use crate::handler::{
-    ActorResponse, Handler, Message, MessageResult, Response, ResponseActFuture,
-    ResponseFuture,
+    ActorResponse, AtomicResponse, Handler, Message, MessageResult, Response,
+    ResponseActFuture, ResponseFuture,
 };
 pub use crate::registry::{ArbiterService, Registry, SystemRegistry, SystemService};
 pub use crate::stream::StreamHandler;
@@ -115,8 +115,8 @@ pub mod prelude {
     pub use crate::context::{Context, ContextFutureSpawner};
     pub use crate::fut::{ActorFuture, ActorStream, WrapFuture, WrapStream};
     pub use crate::handler::{
-        ActorResponse, Handler, Message, MessageResult, Response, ResponseActFuture,
-        ResponseFuture,
+        ActorResponse, AtomicResponse, Handler, Message, MessageResult, Response,
+        ResponseActFuture, ResponseFuture,
     };
     pub use crate::registry::{ArbiterService, SystemService};
     pub use crate::stream::StreamHandler;
@@ -129,7 +129,7 @@ pub mod prelude {
     pub use crate::io;
     pub use crate::utils::{Condition, IntervalFunc, TimerFunc};
 
-    pub use futures::{Future, Stream};
+    pub use futures_util::{future::Future, stream::Stream};
 }
 
 pub mod dev {
@@ -188,7 +188,7 @@ pub mod dev {
 #[allow(clippy::unit_arg)]
 pub fn run<R>(f: R) -> std::io::Result<()>
 where
-    R: futures::Future<Output = ()> + 'static,
+    R: futures_util::future::Future<Output = ()> + 'static,
 {
     Ok(actix_rt::System::new("Default").block_on(f))
 }
@@ -200,11 +200,7 @@ where
 /// This function panics if the actix system is not running.
 pub fn spawn<F>(f: F)
 where
-    F: futures::Future<Output = ()> + 'static,
+    F: futures_util::future::Future<Output = ()> + 'static,
 {
     actix_rt::spawn(f);
 }
-
-/// `InternalServerError` for `actix::MailboxError`
-#[cfg(feature = "http")]
-impl actix_http::ResponseError for MailboxError {}

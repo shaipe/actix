@@ -8,8 +8,8 @@ use std::task::Poll;
 use std::{fmt, task};
 use std::{thread, usize};
 
-use futures::channel::oneshot::{channel as sync_channel, Receiver};
-use futures::Stream;
+use futures_channel::oneshot::{channel as sync_channel, Receiver};
+use futures_util::stream::Stream;
 use parking_lot::Mutex;
 
 use crate::actor::Actor;
@@ -30,7 +30,7 @@ where
 
     fn send(&self, msg: M) -> Result<Receiver<M::Result>, SendError<M>>;
 
-    fn boxed(&self) -> Box<dyn Sender<M>>;
+    fn boxed(&self) -> Box<dyn Sender<M> + Sync>;
 
     fn hash(&self) -> usize;
 
@@ -68,6 +68,14 @@ impl<A: Actor> fmt::Debug for AddressSender<A> {
 /// This is created by the `AddressSender::downgrade` method.
 pub struct WeakAddressSender<A: Actor> {
     inner: Weak<Inner<A>>,
+}
+
+impl<A: Actor> Clone for WeakAddressSender<A> {
+    fn clone(&self) -> WeakAddressSender<A> {
+        WeakAddressSender {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 impl<A: Actor> fmt::Debug for WeakAddressSender<A> {
@@ -457,7 +465,7 @@ where
     fn send(&self, msg: M) -> Result<Receiver<M::Result>, SendError<M>> {
         self.send(msg)
     }
-    fn boxed(&self) -> Box<dyn Sender<M>> {
+    fn boxed(&self) -> Box<dyn Sender<M> + Sync> {
         Box::new(self.clone())
     }
 

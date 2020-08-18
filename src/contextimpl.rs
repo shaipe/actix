@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bitflags::bitflags;
-use futures::Future;
+use futures_util::future::Future;
 use smallvec::SmallVec;
 
 use crate::actor::{
@@ -25,7 +25,10 @@ bitflags! {
     }
 }
 
-type Item<A> = (SpawnHandle, Box<dyn ActorFuture<Output = (), Actor = A>>);
+type Item<A> = (
+    SpawnHandle,
+    Pin<Box<dyn ActorFuture<Output = (), Actor = A>>>,
+);
 
 pub trait AsyncContextParts<A>: ActorContext + AsyncContext<A>
 where
@@ -134,7 +137,7 @@ where
         let handle = self.handles[0].next();
         self.handles[0] = handle;
         let fut: Box<dyn ActorFuture<Output = (), Actor = A>> = Box::new(fut);
-        self.items.push((handle, fut));
+        self.items.push((handle, Pin::from(fut)));
         handle
     }
 
@@ -221,10 +224,10 @@ where
     A: Actor<Context = C>,
 {
     fn drop(&mut self) {
-        if self.alive() {
+        if self.alive() && actix_rt::Arbiter::is_running() {
             self.ctx.parts().stop();
-            let waker = futures::task::noop_waker();
-            let mut cx = futures::task::Context::from_waker(&waker);
+            let waker = futures_util::task::noop_waker();
+            let mut cx = futures_util::task::Context::from_waker(&waker);
             let _ = Pin::new(self).poll(&mut cx);
         }
     }
@@ -316,7 +319,7 @@ where
         modified
     }
 
-    fn clean_cancled_handle(&mut self) {
+    fn clean_canceled_handle(&mut self) {
         while self.ctx.parts().handles.len() > 2 {
             let handle = self.ctx.parts().handles.pop().unwrap();
             let mut idx = 0;
@@ -348,7 +351,7 @@ where
 
             // check cancelled handles, just in case
             if this.merge() {
-                this.clean_cancled_handle();
+                this.clean_canceled_handle();
             }
         }
 
@@ -389,7 +392,7 @@ where
                             // this code is not very efficient, relaying on fact that
                             // cancellation should be rear also number of futures
                             // in actor context should be small
-                            this.clean_cancled_handle();
+                            this.clean_canceled_handle();
 
                             continue 'outer;
                         }

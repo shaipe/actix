@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use futures::Stream;
+use futures_util::stream::Stream;
 use log::error;
 use pin_project::pin_project;
 
@@ -42,7 +42,7 @@ where
     ///
     /// ```rust
     /// use actix::prelude::*;
-    /// use futures::stream::once;
+    /// use futures_util::stream::once;
     ///
     /// #[derive(Message)]
     /// #[rtype(result = "()")]
@@ -134,20 +134,20 @@ where
             <A as StreamHandler<M>>::started(act, ctx);
         }
 
-        loop {
-            match this.stream.as_mut().poll_next(task) {
-                Poll::Ready(Some(msg)) => {
-                    A::handle(act, msg, ctx);
-                    if ctx.waiting() {
-                        return Poll::Pending;
-                    }
+        match this.stream.as_mut().poll_next(task) {
+            Poll::Ready(Some(msg)) => {
+                A::handle(act, msg, ctx);
+                if !ctx.waiting() {
+                    // Let the future's context know that this future might be polled right the way
+                    task.waker().wake_by_ref();
                 }
-                Poll::Ready(None) => {
-                    A::finished(act, ctx);
-                    return Poll::Ready(());
-                }
-                Poll::Pending => return Poll::Pending,
+                Poll::Pending
             }
+            Poll::Ready(None) => {
+                A::finished(act, ctx);
+                Poll::Ready(())
+            }
+            Poll::Pending => Poll::Pending,
         }
     }
 }

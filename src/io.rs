@@ -3,12 +3,12 @@ use std::marker::PhantomData;
 use std::ops::DerefMut;
 use std::pin::Pin;
 use std::rc::Rc;
-use std::{io, task};
+use std::{collections::VecDeque, io, task};
 
 use bitflags::bitflags;
 use bytes::BytesMut;
-use futures::sink::Sink;
-use futures::task::{Context, Poll};
+use futures_util::sink::Sink;
+use futures_util::task::{Context, Poll};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio_util::codec::Encoder;
 
@@ -142,7 +142,7 @@ impl<T: AsyncWrite, E: From<io::Error> + 'static> Writer<T, E> {
 
 struct WriterFut<T, E, A>
 where
-    T: AsyncWrite,
+    T: AsyncWrite + Unpin,
     E: From<io::Error>,
 {
     act: PhantomData<A>,
@@ -177,9 +177,7 @@ where
         let mut io = this.inner.1.borrow_mut();
         inner.task = None;
         while !inner.buffer.is_empty() {
-            match unsafe { Pin::new_unchecked(io.deref_mut()) }
-                .poll_write(task, &inner.buffer)
-            {
+            match Pin::new(io.deref_mut()).poll_write(task, &inner.buffer) {
                 Poll::Ready(Ok(n)) => {
                     if n == 0
                         && act.error(
@@ -216,7 +214,7 @@ where
         }
 
         // Try flushing the underlying IO
-        match unsafe { Pin::new_unchecked(io.deref_mut()) }.poll_flush(task) {
+        match Pin::new(io.deref_mut()).poll_flush(task) {
             Poll::Ready(Ok(_)) => (),
             Poll::Pending => return Poll::Pending,
             Poll::Ready(Err(ref e)) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -308,12 +306,12 @@ where
 
 /// A wrapper for the `AsyncWrite` and `Encoder` types. The AsyncWrite will be flushed when this
 /// struct is dropped.
-pub struct FramedWrite<T: AsyncWrite + Unpin, U: Encoder> {
+pub struct FramedWrite<I, T: AsyncWrite + Unpin, U: Encoder<I>> {
     enc: U,
     inner: UnsafeWriter<T, U::Error>,
 }
 
-impl<T: AsyncWrite + Unpin, U: Encoder> FramedWrite<T, U> {
+impl<I, T: AsyncWrite + Unpin, U: Encoder<I>> FramedWrite<I, T, U> {
     pub fn new<A, C>(io: T, enc: U, ctx: &mut C) -> Self
     where
         A: Actor<Context = C> + WriteHandler<U::Error>,
@@ -392,7 +390,7 @@ impl<T: AsyncWrite + Unpin, U: Encoder> FramedWrite<T, U> {
     }
 
     /// Writes an item to the sink.
-    pub fn write(&mut self, item: U::Item) {
+    pub fn write(&mut self, item: I) {
         let mut inner = self.inner.0.borrow_mut();
         let _ = self.enc.encode(item, &mut inner.buffer).map_err(|e| {
             inner.error = Some(e);
@@ -408,7 +406,7 @@ impl<T: AsyncWrite + Unpin, U: Encoder> FramedWrite<T, U> {
     }
 }
 
-impl<T: AsyncWrite + Unpin, U: Encoder> Drop for FramedWrite<T, U> {
+impl<I, T: AsyncWrite + Unpin, U: Encoder<I>> Drop for FramedWrite<I, T, U> {
     fn drop(&mut self) {
         // Attempts to write any remaining bytes to the stream and flush it
         let mut async_writer = self.inner.1.borrow_mut();
@@ -438,6 +436,7 @@ impl<I: 'static, S: Sink<I> + Unpin + 'static> SinkWrite<I, S> {
             sink,
             task: None,
             handle: SpawnHandle::default(),
+            buffer: VecDeque::new(),
         }));
 
         let handle = ctxt.spawn(SinkWriteFuture {
@@ -449,13 +448,17 @@ impl<I: 'static, S: Sink<I> + Unpin + 'static> SinkWrite<I, S> {
         SinkWrite { inner }
     }
 
-    /// Sends an item to the sink.
-    pub fn write(&mut self, item: I) -> Result<(), S::Error> {
-        let res = Pin::new(&mut self.inner.borrow_mut().sink).start_send(item);
-        if let Ok(()) = res {
-            self.notify_task()
+    /// Queues an item to be sent to the sink.
+    ///
+    /// Returns unsent item if sink is closing or closed.
+    pub fn write(&mut self, item: I) -> Option<I> {
+        if self.inner.borrow().closing_flag.is_empty() {
+            self.inner.borrow_mut().buffer.push_back(item);
+            self.notify_task();
+            None
+        } else {
+            Some(item)
         }
-        res
     }
 
     /// Gracefully closes the sink.
@@ -489,6 +492,10 @@ struct InnerSinkWrite<I, S: Sink<I>> {
     sink: S,
     task: Option<task::Waker>,
     handle: SpawnHandle,
+
+    // buffer of items to be sent so that multiple
+    // calls to start_send don't silently skip items
+    buffer: VecDeque<I>,
 }
 
 struct SinkWriteFuture<I: 'static, S: Sink<I>, A> {
@@ -504,6 +511,7 @@ where
 {
     type Output = ();
     type Actor = A;
+
     fn poll(
         self: Pin<&mut Self>,
         act: &mut A,
@@ -512,7 +520,19 @@ where
     ) -> Poll<Self::Output> {
         let this = self.get_mut();
         let inner = &mut this.inner.borrow_mut();
-        inner.task = None;
+
+        // ensure sink is ready to receive next item
+        match Pin::new(&mut inner.sink).poll_ready(cx) {
+            Poll::Ready(Ok(())) => {
+                if let Some(item) = inner.buffer.pop_front() {
+                    // send front of buffer to sink
+                    let _ = Pin::new(&mut inner.sink).start_send(item);
+                }
+            }
+            Poll::Ready(Err(_err)) => {}
+            Poll::Pending => {}
+        }
+
         if !inner.closing_flag.contains(Flags::CLOSING) {
             match Pin::new(&mut inner.sink).poll_flush(cx) {
                 Poll::Ready(Err(e)) => {
@@ -534,14 +554,18 @@ where
                     }
                 }
                 Poll::Ready(Ok(())) => {
-                    inner.closing_flag |= Flags::CLOSED;
-                    act.finished(ctxt);
-                    return Poll::Ready(());
+                    // ensure all items in buffer have been sent before closing
+                    if inner.buffer.is_empty() {
+                        inner.closing_flag |= Flags::CLOSED;
+                        act.finished(ctxt);
+                        return Poll::Ready(());
+                    }
                 }
                 Poll::Pending => {}
             }
         }
-        inner.task = Some(cx.waker().clone());
+
+        inner.task.replace(cx.waker().clone());
 
         Poll::Pending
     }

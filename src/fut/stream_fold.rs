@@ -2,7 +2,7 @@ use std::mem;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 use crate::actor::Actor;
 use crate::fut::{ActorFuture, ActorStream, IntoActorFuture};
@@ -61,7 +61,6 @@ where
     type Output = T;
     type Actor = S::Actor;
 
-    #[project]
     fn poll(
         self: Pin<&mut Self>,
         act: &mut S::Actor,
@@ -87,7 +86,7 @@ where
                     }
                 }
                 State::Processing(mut fut) => {
-                    match unsafe { Pin::new_unchecked(&mut fut) }.poll(act, ctx, task) {
+                    match Pin::new(&mut fut).poll(act, ctx, task) {
                         Poll::Ready(state) => this.state = State::Ready(state),
                         Poll::Pending => {
                             this.state = State::Processing(fut);

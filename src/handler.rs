@@ -3,13 +3,12 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use futures::channel::oneshot::Sender as SyncSender;
+use futures_channel::oneshot::Sender as SyncSender;
 
 use crate::actor::{Actor, AsyncContext};
 use crate::address::Addr;
 use crate::context::Context;
 use crate::fut::ActorFuture;
-use crate::WrapFuture;
 
 /// Describes how to handle messages of a specific type.
 ///
@@ -84,9 +83,85 @@ where
 /// ```
 pub struct MessageResult<M: Message>(pub M::Result);
 
+/// A specialized actor future holder for atomic asynchronous message handling.
+///
+/// Intended be used when the future returned will need exclusive access Actor's
+/// internal state or context, e.g., it can yield at critical sessions.
+/// When the actor starts to process this future, it will not pull any other
+/// spawned futures until this one as been completed.
+/// Check [ActorFuture] for available methods for accessing Actor's
+/// internal state.
+///
+/// ## Note
+/// The runtime itself is not blocked in the process, only the Actor,
+/// other futures, and therefore, other actors are still allowed to make
+/// progress when this [AtomicResponse] is used.
+///
+/// # Examples
+/// On the following example, the response to `Msg` would always be 29
+/// even if there are multiple `Msg` sent to `MyActor`.
+/// ```rust, no_run
+/// # use actix::prelude::*;
+/// # use actix::clock::delay_for;
+/// # use std::time::Duration;
+/// #
+/// # #[derive(Message)]
+/// # #[rtype(result = "usize")]
+/// # struct Msg;
+/// #
+/// # struct MyActor(usize);
+/// #
+/// # impl Actor for MyActor {
+/// #    type Context = Context<Self>;
+/// # }
+/// #
+/// impl Handler<Msg> for MyActor {
+///     type Result = AtomicResponse<Self, usize>;
+///
+///     fn handle(&mut self, _: Msg, _: &mut Context<Self>) -> Self::Result {
+///         AtomicResponse::new(Box::pin(
+///             async {}
+///                 .into_actor(self)
+///                 .map(|_, this, _| {
+///                     this.0 = 30;
+///                 })
+///                 .then(|_, this, _| {
+///                     delay_for(Duration::from_secs(3)).into_actor(this)
+///                 })
+///                 .map(|_, this, _| {
+///                     this.0 -= 1;
+///                     this.0
+///                 }),
+///         ))
+///     }
+/// }
+/// ```
+pub struct AtomicResponse<A, T>(ResponseActFuture<A, T>);
+
+impl<A, T> AtomicResponse<A, T> {
+    pub fn new(fut: ResponseActFuture<A, T>) -> Self {
+        AtomicResponse(fut)
+    }
+}
+
+impl<A, M, T: 'static> MessageResponse<A, M> for AtomicResponse<A, T>
+where
+    A: Actor,
+    M: Message<Result = T>,
+    A::Context: AsyncContext<A>,
+{
+    fn handle<R: ResponseChannel<M>>(self, ctx: &mut A::Context, tx: Option<R>) {
+        ctx.wait(self.0.map(move |res, _, _| {
+            if let Some(tx) = tx {
+                tx.send(res);
+            }
+        }));
+    }
+}
+
 /// A specialized actor future for asynchronous message handling.
 ///
-/// Intended be used from when the future returned will,
+/// Intended be used when the future returned will,
 /// at some point, need to access Actor's internal state or context
 /// in order to finish.
 /// Check [ActorFuture] for available methods for accessing Actor's
@@ -97,6 +172,7 @@ pub struct MessageResult<M: Message>(pub M::Result);
 /// [Context], does not enforce the poll of any [ActorFuture] to be
 /// exclusive. Therefore, if other instances of [ActorFuture] are spawned
 /// into this Context **their execution won't necessarily be atomic**.
+/// Check [AtomicResponse] if you need exclusive access over the actor.
 ///
 /// # Examples
 /// ```rust, no_run
@@ -116,7 +192,7 @@ pub struct MessageResult<M: Message>(pub M::Result);
 ///     type Result = ResponseActFuture<Self, Result<usize, ()>>;
 ///
 ///     fn handle(&mut self, _: Msg, _: &mut Context<Self>) -> Self::Result {
-///         Box::new(
+///         Box::pin(
 ///             async {
 ///                 // Some async computation
 ///                 42
@@ -130,7 +206,7 @@ pub struct MessageResult<M: Message>(pub M::Result);
 ///     }
 /// }
 /// ```
-pub type ResponseActFuture<A, I> = Box<dyn ActorFuture<Output = I, Actor = A>>;
+pub type ResponseActFuture<A, I> = Pin<Box<dyn ActorFuture<Output = I, Actor = A>>>;
 
 /// A specialized future for asynchronous message handling.
 ///
@@ -180,15 +256,16 @@ pub trait ResponseChannel<M: Message>: 'static {
 ///
 /// If `Actor::Context` implements [AsyncContext] it's possible to handle
 /// the message asynchronously.
-/// For asynchronous message handling we offer two possible response types
-/// [ResponseFuture] and [ResponseActFuture].
+/// For asynchronous message handling we offer the following possible response types:
 /// - [ResponseFuture] should be used for when the future returned doesn't
 ///   need to access Actor's internal state or context to progress, either
 ///   because it's completely agnostic to it or because the required data has
 ///   already been moved to it and it won't need Actor state to continue.
-/// - [ResponseActFuture] should be used from when the future returned
+/// - [ResponseActFuture] should be used when the future returned
 ///   will, at some point, need to access Actor's internal state or context
 ///   in order to finish.
+/// - [AtomicResponse] should be used when the future returned needs exclusive
+///   access to  Actor's internal state or context.
 pub trait MessageResponse<A: Actor, M: Message> {
     fn handle<R: ResponseChannel<M>>(self, ctx: &mut A::Context, tx: Option<R>);
 }
@@ -281,20 +358,75 @@ where
     A::Context: AsyncContext<A>,
 {
     fn handle<R: ResponseChannel<M>>(self, ctx: &mut A::Context, tx: Option<R>) {
-        ctx.spawn(self.then(move |res, this, _| {
+        ctx.spawn(self.map(move |res, _, _| {
             if let Some(tx) = tx {
                 tx.send(res);
             }
-            async {}.into_actor(this)
         }));
     }
 }
 
-impl<A, M, I: 'static, E: 'static> MessageResponse<A, M> for ResponseFuture<Result<I, E>>
+/// MessageResponse trait impl to enable the use of any `I: 'static` with asynchronous
+/// message handling
+///
+/// # Examples
+/// Usage with `Result<I,E>`:
+/// ```
+/// # pub struct MyActorAsync {}
+/// # impl Actor for MyActorAsync { type Context = actix::Context<Self>; }
+/// # use actix::prelude::*;
+/// # use core::pin::Pin;
+/// #
+/// pub struct MyQuestion{}
+/// impl Message for MyQuestion {
+///     type Result = Result<u8,u8>;
+/// }
+/// impl Handler<MyQuestion> for MyActorAsync {
+///     type Result = ResponseFuture<Result<u8,u8>>;
+///     fn handle(&mut self, question: MyQuestion, _ctx: &mut Context<Self>) -> Self::Result {
+///         Box::pin(async {Ok(5)})
+///     }
+/// }
+/// ```
+/// Usage with `Option<I>`:
+/// ```
+/// # pub struct MyActorAsync {}
+/// # impl Actor for MyActorAsync { type Context = actix::Context<Self>; }
+/// # use actix::prelude::*;
+/// # use core::pin::Pin;
+/// pub struct MyQuestion{}
+/// impl Message for MyQuestion {
+///     type Result = Option<u8>;
+/// }
+/// impl Handler<MyQuestion> for MyActorAsync {
+///     type Result = ResponseFuture<Option<u8>>;
+///     fn handle(&mut self, question: MyQuestion, _ctx: &mut Context<Self>) -> Self::Result {
+///         Box::pin(async {Some(5)})
+///     }
+/// }
+/// ```
+/// Usage with any `I: 'static`:
+/// ```
+/// # pub struct MyActorAsync {}
+/// # impl Actor for MyActorAsync { type Context = actix::Context<Self>; }
+/// # use actix::prelude::*;
+/// # use core::pin::Pin;
+/// pub struct MyQuestion{}
+/// impl Message for MyQuestion {
+///     type Result = u8;
+/// }
+/// impl Handler<MyQuestion> for MyActorAsync {
+///     type Result = ResponseFuture<u8>;
+///     fn handle(&mut self, question: MyQuestion, _ctx: &mut Context<Self>) -> Self::Result {
+///         Box::pin(async {5})
+///     }
+/// }
+/// ```
+impl<A, M, I: 'static> MessageResponse<A, M> for ResponseFuture<I>
 where
     A: Actor,
     M::Result: Send,
-    M: Message<Result = Result<I, E>>,
+    M: Message<Result = I>,
     A::Context: AsyncContext<A>,
 {
     fn handle<R: ResponseChannel<M>>(self, _: &mut A::Context, tx: Option<R>) {
@@ -373,7 +505,7 @@ where
 
 enum ActorResponseTypeItem<A, I, E> {
     Result(Result<I, E>),
-    Fut(Box<dyn ActorFuture<Output = Result<I, E>, Actor = A>>),
+    Fut(Pin<Box<dyn ActorFuture<Output = Result<I, E>, Actor = A>>>),
 }
 
 /// A helper type for representing different types of message responses.
@@ -408,7 +540,7 @@ impl<A: Actor, I, E> ActorResponse<A, I, E> {
         T: ActorFuture<Output = Result<I, E>, Actor = A> + 'static,
     {
         Self {
-            item: ActorResponseTypeItem::Fut(Box::new(fut)),
+            item: ActorResponseTypeItem::Fut(Box::pin(fut)),
         }
     }
 }
@@ -422,11 +554,10 @@ where
     fn handle<R: ResponseChannel<M>>(self, ctx: &mut A::Context, tx: Option<R>) {
         match self.item {
             ActorResponseTypeItem::Fut(fut) => {
-                let fut = fut.then(move |res, this, _| {
+                let fut = fut.map(move |res, _, _| {
                     if let Some(tx) = tx {
                         tx.send(res)
                     }
-                    async {}.into_actor(this)
                 });
 
                 ctx.spawn(fut);

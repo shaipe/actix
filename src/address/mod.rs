@@ -201,6 +201,14 @@ impl<A: Actor> WeakAddr<A> {
     }
 }
 
+impl<A: Actor> Clone for WeakAddr<A> {
+    fn clone(&self) -> WeakAddr<A> {
+        WeakAddr {
+            wtx: self.wtx.clone(),
+        }
+    }
+}
+
 /// The `Recipient` type allows to send one specific message to an
 /// actor.
 ///
@@ -212,7 +220,7 @@ where
     M: Message + Send,
     M::Result: Send,
 {
-    tx: Box<dyn Sender<M>>,
+    tx: Box<dyn Sender<M> + Sync>,
 }
 
 impl<M> Recipient<M>
@@ -221,7 +229,7 @@ where
     M::Result: Send,
 {
     /// Creates a new recipient.
-    pub(crate) fn new(tx: Box<dyn Sender<M>>) -> Recipient<M> {
+    pub(crate) fn new(tx: Box<dyn Sender<M> + Sync>) -> Recipient<M> {
         Recipient { tx }
     }
 

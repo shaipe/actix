@@ -4,7 +4,8 @@ use std::task::{Context, Poll};
 use actix::io::SinkWrite;
 use actix::prelude::*;
 use bytes::{Buf, Bytes};
-use futures::{channel::mpsc, sink::Sink, StreamExt};
+use futures_channel::mpsc;
+use futures_util::{sink::Sink, stream::StreamExt};
 
 type ByteSender = mpsc::UnboundedSender<u8>;
 
@@ -91,7 +92,7 @@ impl actix::io::WriteHandler<()> for MyActor {
 impl Handler<Data> for MyActor {
     type Result = ();
     fn handle(&mut self, data: Data, _ctxt: &mut Self::Context) {
-        self.sink.write(data.bytes).unwrap();
+        let _ = self.sink.write(data.bytes);
         if data.last {
             self.sink.close();
         }
@@ -204,7 +205,8 @@ impl actix::io::WriteHandler<mpsc::SendError> for AnotherActor {
 impl Handler<Data> for AnotherActor {
     type Result = ();
     fn handle(&mut self, data: Data, _ctxt: &mut Self::Context) {
-        self.sink.write(data.bytes).unwrap();
+        let _ = self.sink.write(data.bytes);
+
         if data.last {
             self.sink.close();
         }

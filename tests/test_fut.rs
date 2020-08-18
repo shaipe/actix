@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use actix::clock::{delay_for, Duration};
 use actix::prelude::*;
-use futures::FutureExt;
+use futures_util::future::FutureExt;
 
 struct MyActor {
     timeout: Arc<AtomicBool>,
@@ -50,12 +50,22 @@ impl Actor for MyStreamActor {
     type Context = actix::Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        let mut s = futures::stream::FuturesOrdered::new();
+        let mut s = futures_util::stream::FuturesOrdered::new();
         s.push(delay_for(Duration::new(0, 5_000_000)));
         s.push(delay_for(Duration::new(0, 5_000_000)));
 
         s.into_actor(self)
             .timeout(Duration::new(0, 1000))
+            .then(|res, act, _| {
+                // Additional waiting time to test `then` call as well
+                Box::pin(
+                    async move {
+                        delay_for(Duration::from_millis(500)).await;
+                        res
+                    }
+                    .into_actor(act),
+                )
+            })
             .map(|e, act, _| {
                 if let Err(()) = e {
                     act.timeout.store(true, Ordering::Relaxed);

@@ -1,7 +1,7 @@
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use pin_project::{pin_project, project};
+use pin_project::pin_project;
 
 use crate::actor::Actor;
 use crate::fut::{ActorFuture, ActorStream, IntoActorFuture};
@@ -47,7 +47,6 @@ where
     type Item = U::Output;
     type Actor = S::Actor;
 
-    #[project]
     fn poll_next(
         self: Pin<&mut Self>,
         act: &mut S::Actor,
@@ -64,7 +63,7 @@ where
             this.future = Some((this.f)(item, act, ctx).into_future());
         }
         assert!(this.future.is_some());
-        match Pin::new(&mut this.future.take().unwrap()).poll(act, ctx, task) {
+        match Pin::new(this.future.as_mut().unwrap()).poll(act, ctx, task) {
             Poll::Ready(e) => {
                 this.future = None;
                 Poll::Ready(Some(e))
